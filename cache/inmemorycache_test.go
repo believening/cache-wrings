@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// not consider Stat change
 func Test_inMemoryCache_Set(t *testing.T) {
 	type args struct {
 		k string
@@ -87,6 +88,7 @@ func Test_inMemoryCache_Get(t *testing.T) {
 	}
 }
 
+// not consider Stat change
 func Test_inMemoryCache_Del(t *testing.T) {
 	type args struct {
 		k string

@@ -36,7 +36,11 @@ func (imc *inMemoryCache) Get(k string) ([]byte, error) {
 func (imc *inMemoryCache) Del(k string) error {
 	imc.Lock()
 	defer imc.Unlock()
-	delete(imc.m, k)
+	v, exist := imc.m[k]
+	if exist {
+		delete(imc.m, k)
+		imc.del(k, v)
+	}
 	return nil
 }
 
