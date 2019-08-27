@@ -1,7 +1,7 @@
 package server
 
 import (
-	"cache-wings/cache"
+	"gtihub.com/believening/cache-wrings/cache"
 	"encoding/json"
 	"io/ioutil"
 	"log"

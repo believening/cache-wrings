@@ -1,8 +1,8 @@
 package main
 
 import (
-	"cache-wings/cache"
-	"cache-wings/server"
+	"gtihub.com/believening/cache-wrings/cache"
+	"gtihub.com/believening/cache-wrings/server"
 )
 
 func main() {
