@@ -1,21 +1,23 @@
 package server
 
 import (
-	"gtihub.com/believening/cache-wrings/cache"
-	"encoding/json"
-	"io/ioutil"
+	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
 	"log"
-	"net/http"
-	"strings"
+	"net"
+	"strconv"
+
+	"github.com/believening/cache-wrings/cache"
 )
 
-// HTTP server error 已经被定义好的
-// var (
-// 	// ErrInvalidKeyLenth 键长度非法
-// 	ErrInvalidKeyLenth = errors.New("server: invalid length of the key")
-// 	// ErrUnsupportMethod 不支持的 HTTP method
-// 	ErrUnsupportMethod = errors.New("server: unsupport method")
-// )
+var (
+	address = "127.0.0.1:8088"
+
+	invalidRequest = errors.New("invalid request")
+	internalError  = errors.New("internal error")
+)
 
 // Server 后端
 type Server struct {
@@ -27,86 +29,135 @@ func New(c cache.Cache) *Server {
 	return &Server{c}
 }
 
-func (s *Server) cacheHandler() http.Handler {
-	return &cacheHandler{s}
-}
-
-func (s *Server) statHandler() http.Handler {
-	return &statHandler{s}
-}
-
-type cacheHandler struct {
-	*Server
-}
-
-// 定义规则：method /cache/<key>\r\n<value>
-func (ch *cacheHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// strings.Split() 会在每一个分隔符处都切割，若分隔符在字符串最开始，则会增加一个空字符
-	// fmt.Printf("%q\n", strings.Split("a man a plan a canal panama", "a "))
-	// output: ["" "man " "plan " "canal panama"]
-	k := strings.Split(r.URL.EscapedPath(), "/")[2]
-	if len(k) <= 0 {
-		w.WriteHeader(http.StatusBadRequest) // 400 error
-	}
-	switch r.Method {
-	case http.MethodPut:
-		// 读取 v
-		v, _ := ioutil.ReadAll(r.Body)
-		if err := ch.Set(k, v); err != nil {
-			log.Panicln(err)
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		return
-	case http.MethodGet:
-		v, err := ch.Get(k)
-		if err != nil {
-			log.Panicln(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if len(v) == 0 {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Write(v)
-		return
-	case http.MethodDelete:
-		if err := ch.Del(k); err != nil {
-			log.Println(err)
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		return
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-}
-
-type statHandler struct {
-	*Server
-}
-
-// 规则： GET /stat/
-func (sh *statHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// 序列化数据
-		b, err := json.Marshal(sh.GetStat())
-		if err != nil {
-			log.Println(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Write(b)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-	}
-	return
-}
-
 // Run 运行后端
 func (s *Server) Run() {
-	http.Handle("/cache/", s.cacheHandler())
-	http.Handle("/stat", s.statHandler())
-	http.ListenAndServe("127.0.0.1:55555", nil)
+	l, err := net.Listen("tcp", address)
+	defer l.Close()
+	if err != nil {
+		log.Fatalf("server listen at %s failed: %v\n", address, err)
+		return
+	}
+	for {
+		conn, err := l.Accept()
+		log.Printf("conn: %v", conn)
+		if err != nil {
+			log.Fatalf("listener accept failed: %v\n", err)
+		}
+		go s.serve(conn)
+	}
+}
+
+// tcp conn 复用持续读取时，一次读取多少内容需要明确的
+// 采用
+func (s *Server) serve(conn net.Conn) {
+	log.Printf("serveing %s", conn.RemoteAddr())
+	in := bufio.NewReader(conn)
+	defer conn.Close()
+	for {
+		data, _, err := in.ReadLine()
+		log.Println(string(data), len(data))
+		if err != nil {
+			log.Printf("read data form client failed: %v\n", err)
+			// writeResponse(nil, internalError, conn)
+			return
+		}
+		if len(data) == 0 {
+			log.Printf("read nil form client\n")
+			// writeResponse(nil, invalidRequest, conn)
+			continue
+		}
+		opt := data[0]
+		switch opt {
+		case 'G', 'g': // Glen key
+			err = s.handleGet(conn, data[1:len(data)])
+		case 'P', 'p': // Plen len keyvalue
+			err = s.handlePut(conn, data[1:len(data)])
+		case 'D', 'd': // Dlen key
+			err = s.handleDel(conn, data[1:len(data)])
+		case 'S', 's': // S
+			err = s.handleStat(conn)
+		default:
+			log.Printf("invalid oprate %s\n", string(opt))
+		}
+		if err != nil {
+			log.Printf("close conn with internal error: %v\n", err)
+			return
+		}
+	}
+}
+
+// handleGet
+//  data: len key
+//  resp: len value | len -error
+func (s *Server) handleGet(conn net.Conn, data []byte) error {
+	sp := bytes.Index(data, []byte{' '})
+	if sp < 0 {
+		// writeResponse(nil, invalidRequest, conn)
+		return fmt.Errorf("invalid request %s", string(data))
+	}
+	len, err := strconv.Atoi(string(data[:sp]))
+	if err != nil {
+		// writeResponse(nil, invalidRequest, conn)
+		return fmt.Errorf("parse key len %s failed: %v", string(data), err)
+	}
+	sp++
+	// key := data[sp:sp+len]
+	value, err := s.Cache.Get(string(data[sp : sp+len]))
+	return writeResponse(value, err, conn)
+}
+
+func (s *Server) handlePut(conn net.Conn, data []byte) error {
+	llkv := bytes.SplitN(data, []byte{' '}, 3)
+	if llkv == nil || len(llkv) != 3 {
+		// writeResponse(nil, invalidRequest, conn)
+		return fmt.Errorf("invalid format of len len kv: %s\n", string(data))
+	}
+	klen, err := strconv.Atoi(string(llkv[0]))
+	if err != nil {
+		// writeResponse(nil, internalError, conn)
+		return fmt.Errorf("parse key len %s faild: %v\n", string(data), err)
+	}
+	vlen, err := strconv.Atoi(string(llkv[1]))
+	if err != nil {
+		// writeResponse(nil, internalError, conn)
+		return fmt.Errorf("parse key len %s faild: %v\n", string(data), err)
+	}
+	key := string(llkv[2][:klen])
+	value := llkv[2][klen : klen+vlen]
+	return writeResponse(nil, s.Cache.Set(key, value), conn)
+}
+
+func (s *Server) handleDel(conn net.Conn, data []byte) error {
+	sp := bytes.Index(data, []byte{' '})
+	if sp < 0 {
+		// writeResponse(nil, invalidRequest, conn)
+		return fmt.Errorf("invalid request %s", string(data))
+	}
+	len, err := strconv.Atoi(string(data[:sp]))
+	if err != nil {
+		// writeResponse(nil, invalidRequest, conn)
+		return fmt.Errorf("parse key len %s failed: %v", string(data), err)
+	}
+	sp++
+	// key := data[sp:sp+len]
+	err = s.Cache.Del(string(data[sp : sp+len]))
+	return writeResponse(nil, err, conn)
+}
+
+func (s *Server) handleStat(conn net.Conn) error {
+	stat := s.Cache.GetStat()
+	resp := fmt.Sprintf("hold %d pair key", stat.Cnt)
+	return writeResponse([]byte(resp), nil, conn)
+}
+
+func writeResponse(value []byte, e error, conn net.Conn) error {
+	var resp string
+	if e != nil {
+		errmsg := e.Error()
+		resp = fmt.Sprintf("%d %s", len(errmsg), errmsg)
+	} else {
+		resp = fmt.Sprintf("%d %s", len(value), value)
+	}
+	_, err := conn.Write([]byte(resp))
+	return err
 }
