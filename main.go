@@ -1,11 +1,14 @@
 package main
 
 import (
-	"gtihub.com/believening/cache-wrings/cache"
-	"gtihub.com/believening/cache-wrings/server"
+	"log"
+
+	"github.com/believening/cache-wrings/cache"
+	"github.com/believening/cache-wrings/server"
 )
 
 func main() {
 	c := cache.NewInMemCache()
+	log.Println("server running")
 	server.New(c).Run()
 }
