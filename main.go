@@ -9,7 +9,7 @@ import (
 func main() {
 	c := cache.New("inmemory")
 	// serverTyp := "goHttp"
-	serverTyp := "httprouter"
-	serverFactory := server.Servers[serverTyp]
-	serverFactory(c).Run()
+	httpTyp := "httprouter"
+	go server.Servers[httpTyp](c).Run()
+	server.Servers["tcp"](c).Run()
 }
